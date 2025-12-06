@@ -8,8 +8,6 @@ using UnityEngine;
 using TMPro;
 using System;
 using System.Collections.Generic;
-using System.IO;
-using System.Threading;
 using System.Threading.Tasks;
 using BeatSaberMarkupLanguage.Util;
 using UnityEngine.Networking;
@@ -18,6 +16,7 @@ using HMUI;
 using IPA.Utilities;
 using Newtonsoft.Json;
 using Newtonsoft.Json.Linq;
+using OculusStudios.Platform.Core;
 using UnityEngine.UI;
 using UnityEngine.XR;
 
@@ -43,7 +42,7 @@ namespace BeatSaverVoting.UI
 
         internal BeatmapLevel lastSong;
         private Song _lastBeatSaverSong;
-        private IPlatformUserModel _userModel;
+        private IPlatform _userModel;
         private readonly string _userAgent = $"BeatSaverVoting/{Assembly.GetExecutingAssembly().GetName().Version}";
         [UIComponent("voteTitle")]
         public TextMeshProUGUI voteTitle;
@@ -87,7 +86,7 @@ namespace BeatSaverVoting.UI
             
             if (!platformLeaderboardsModel) return;
 
-            _userModel = platformLeaderboardsModel._platformUserModel;
+            _userModel = platformLeaderboardsModel._platform;
 
             BSMLParser.Instance.Parse(BeatSaberMarkupLanguage.Utilities.GetResourceContent(Assembly.GetExecutingAssembly(), "BeatSaverVoting.UI.votingUI.bsml"), resultsView.gameObject, this);
             resultsView.didActivateEvent += ResultsView_didActivateEvent;
@@ -292,26 +291,19 @@ namespace BeatSaverVoting.UI
         {
             UpdateView("Voting...");
 
-            var task = Task.Run(async () =>
-            {
-                var a = await _userModel.GetUserInfo(new CancellationToken());
-                var b = await _userModel.GetUserAuthToken();
-
-                return (a, b);
-            });
+            var task = Task.Run(async () => await _userModel.user.GetAccessTokenAsync());
 
             yield return new WaitUntil(() => task.IsCompleted);
-            var (userInfo, authData) = task.Result;
-            var userId = userInfo.platformUserId;
-            var authToken = authData.token;
+            var authToken = task.Result;
+            var userId = _userModel.user.userId.ToString();
 
-            if (userInfo.platform == UserInfo.Platform.Steam)
+            if (_userModel.vendor == Vendor.Valve)
             {
-                yield return PerformVote(hash, new Payload {auth = new Auth {steamId = userId, proof = authToken}, direction = upvote, hash = hash}, currentVoteCount, callback);
+                yield return PerformVote(hash, new Payload {auth = new Auth { steamId = userId, proof = authToken }, direction = upvote, hash = hash}, currentVoteCount, callback);
             }
-            else if (userInfo.platform == UserInfo.Platform.Oculus)
+            else if (_userModel.vendor == Vendor.Meta)
             {
-                yield return PerformVote(hash, new Payload { auth = new Auth {oculusId = userId, proof = authToken}, direction = upvote, hash = hash}, currentVoteCount, callback);
+                yield return PerformVote(hash, new Payload { auth = new Auth { oculusId = userId, proof = authToken }, direction = upvote, hash = hash}, currentVoteCount, callback);
             }
         }
 
