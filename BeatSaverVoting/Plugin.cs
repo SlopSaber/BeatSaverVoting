@@ -95,7 +95,7 @@ namespace BeatSaverVoting
             UI.VotingUI.instance.lastSong = BS_Utils.Plugin.LevelData.GameplayCoreSceneSetupData?.beatmapLevel;
         }
 
-        private static void BSEvents_menuSceneLoadedFresh(ScenesTransitionSetupDataSO data)
+        private static void BSEvents_menuSceneLoadedFresh(ScenesTransitionSetupData data)
         {
             UI.VotingUI.instance.Setup();
             tableView = Resources.FindObjectsOfTypeAll<LevelCollectionTableView>().FirstOrDefault()
