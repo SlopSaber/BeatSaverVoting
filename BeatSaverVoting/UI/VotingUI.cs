@@ -65,6 +65,7 @@ namespace BeatSaverVoting.UI
             }
         }
         private bool _downInteractable = true;
+        private bool _isSetup;
         [UIValue("DownInteractable")]
         public bool DownInteractable
         {
@@ -76,21 +77,33 @@ namespace BeatSaverVoting.UI
             }
         }
 
-        internal void Setup()
+        internal bool Setup()
         {
+            if (_isSetup) return true;
+
             var resultsView = Resources.FindObjectsOfTypeAll<ResultsViewController>().FirstOrDefault();
 
-            if (!resultsView) return;
+            if (!resultsView) return false;
             
             var platformLeaderboardsModel = Resources.FindObjectsOfTypeAll<PlatformLeaderboardsModel>().FirstOrDefault();
             
-            if (!platformLeaderboardsModel) return;
+            if (!platformLeaderboardsModel) return false;
 
             _userModel = platformLeaderboardsModel._platform;
 
-            BSMLParser.Instance.Parse(BeatSaberMarkupLanguage.Utilities.GetResourceContent(Assembly.GetExecutingAssembly(), "BeatSaverVoting.UI.votingUI.bsml"), resultsView.gameObject, this);
+            try
+            {
+                BSMLParser.Instance.Parse(BeatSaberMarkupLanguage.Utilities.GetResourceContent(Assembly.GetExecutingAssembly(), "BeatSaverVoting.UI.votingUI.bsml"), resultsView.gameObject, this);
+            }
+            catch (InvalidOperationException exception) when (exception.Message.Contains("BSMLParser has not initialized"))
+            {
+                return false;
+            }
+
             resultsView.didActivateEvent += ResultsView_didActivateEvent;
             SetColors();
+            _isSetup = true;
+            return true;
         }
 
         private static AnimationClip GenerateButtonAnimation(float r, float g, float b, float a, float x, float y) =>

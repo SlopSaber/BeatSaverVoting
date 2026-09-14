@@ -1,4 +1,5 @@
 ﻿using System;
+using System.Collections;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
@@ -21,7 +22,12 @@ namespace BeatSaverVoting
     [Plugin(RuntimeOptions.SingleStartInit)]
     public class Plugin
     {
+        private sealed class CoroutineRunner : MonoBehaviour
+        {
+        }
+
         private static Harmony _harmony;
+        private static CoroutineRunner _coroutineRunner;
 
         public enum VoteType { Upvote, Downvote };
 
@@ -88,6 +94,11 @@ namespace BeatSaverVoting
         public void OnEnd()
         {
             _harmony.UnpatchSelf();
+            if (_coroutineRunner != null)
+            {
+                UnityEngine.Object.Destroy(_coroutineRunner.gameObject);
+                _coroutineRunner = null;
+            }
         }
 
         private static void BSEvents_gameSceneLoaded()
@@ -97,9 +108,35 @@ namespace BeatSaverVoting
 
         private static void BSEvents_menuSceneLoadedFresh(ScenesTransitionSetupData data)
         {
-            UI.VotingUI.instance.Setup();
-            tableView = Resources.FindObjectsOfTypeAll<LevelCollectionTableView>().FirstOrDefault()
-                .GetField<HMUI.TableView, LevelCollectionTableView>("_tableView");
+            if (_coroutineRunner == null)
+            {
+                var gameObject = new GameObject("BeatSaverVotingCoroutineRunner");
+                UnityEngine.Object.DontDestroyOnLoad(gameObject);
+                _coroutineRunner = gameObject.AddComponent<CoroutineRunner>();
+            }
+
+            _coroutineRunner.StartCoroutine(SetupAfterMenuSceneLoad());
+        }
+
+        private static IEnumerator SetupAfterMenuSceneLoad()
+        {
+            for (var frame = 0; frame < 120; frame++)
+            {
+                if (UI.VotingUI.instance.Setup())
+                {
+                    var tableViewController = Resources.FindObjectsOfTypeAll<LevelCollectionTableView>().FirstOrDefault();
+                    if (tableViewController != null)
+                    {
+                        tableView = tableViewController.GetField<HMUI.TableView, LevelCollectionTableView>("_tableView");
+                    }
+
+                    yield break;
+                }
+
+                yield return null;
+            }
+
+            Utilities.Logging.log.Warn("BeatSaver voting UI did not become ready after menu scene load.");
         }
 
         [Init]
