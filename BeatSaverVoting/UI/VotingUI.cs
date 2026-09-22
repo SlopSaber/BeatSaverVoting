@@ -9,7 +9,9 @@ using TMPro;
 using System;
 using System.Collections.Generic;
 using System.Threading.Tasks;
-using BeatSaberMarkupLanguage.Util;
+using System.ComponentModel;
+using Component = UnityEngine.Component;
+using System.Runtime.CompilerServices;
 using UnityEngine.Networking;
 using BeatSaverVoting.Utilities;
 using HMUI;
@@ -22,8 +24,15 @@ using UnityEngine.XR;
 
 namespace BeatSaverVoting.UI
 {
-    public class VotingUI : NotifiableSingleton<VotingUI>
+    public class VotingUI : INotifyPropertyChanged
     {
+
+        public event PropertyChangedEventHandler PropertyChanged;
+
+        private void NotifyPropertyChanged([CallerMemberName] string propertyName = null)
+        {
+            PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(propertyName));
+        }
 
         [Serializable]
         private struct Auth
@@ -331,11 +340,7 @@ namespace BeatSaverVoting.UI
         private IEnumerator PerformVote(string hash, Payload payload, int currentVoteCount, VoteCallback callback)
         {
             var json = JsonConvert.SerializeObject(payload);
-            var voteWWW = UnityWebRequest.Post($"{Plugin.BeatsaverURL}/vote", json);
-
-            var jsonBytes = new System.Text.UTF8Encoding().GetBytes(json);
-            voteWWW.uploadHandler = new UploadHandlerRaw(jsonBytes);
-            voteWWW.SetRequestHeader("Content-Type", "application/json");
+            using var voteWWW = UnityWebRequest.Post($"{Plugin.BeatsaverURL}/vote", json, "application/json");
             voteWWW.SetRequestHeader("user-agent", _userAgent);
             voteWWW.timeout = 30;
             yield return voteWWW.SendWebRequest();
@@ -347,7 +352,7 @@ namespace BeatSaverVoting.UI
             }
             else if (voteWWW.responseCode < 200 || voteWWW.responseCode > 299)
             {
-                var errorMessage = _errorMessages[voteWWW.responseCode] ?? "Error\n" + voteWWW.responseCode;
+                var errorMessage = _errorMessages.TryGetValue(voteWWW.responseCode, out var knownError) ? knownError : "Error\n" + voteWWW.responseCode;
                 UpdateView(errorMessage, !_errorMessages.ContainsKey(voteWWW.responseCode));
 
                 Logging.log.Error("Error: " + voteWWW.downloadHandler.text);

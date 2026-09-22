@@ -26,6 +26,7 @@ namespace BeatSaverVoting
         {
         }
 
+        private static readonly UI.VotingUI VotingView = new UI.VotingUI();
         private static Harmony _harmony;
         private static CoroutineRunner _coroutineRunner;
 
@@ -46,7 +47,7 @@ namespace BeatSaverVoting
 
         public static void VoteForSong(string hash, VoteType type, VoteCallback callback)
         {
-            UI.VotingUI.instance.VoteForSong(hash, type == VoteType.Upvote, callback);
+            VotingView.VoteForSong(hash, type == VoteType.Upvote, callback);
         }
 
         public static VoteType? CurrentVoteStatus(string hash)
@@ -103,7 +104,7 @@ namespace BeatSaverVoting
 
         private static void BSEvents_gameSceneLoaded()
         {
-            UI.VotingUI.instance.lastSong = BS_Utils.Plugin.LevelData.GameplayCoreSceneSetupData?.beatmapLevel;
+            VotingView.lastSong = BS_Utils.Plugin.LevelData.GameplayCoreSceneSetupData?.beatmapLevel;
         }
 
         private static void BSEvents_menuSceneLoadedFresh(ScenesTransitionSetupData data)
@@ -122,7 +123,7 @@ namespace BeatSaverVoting
         {
             for (var frame = 0; frame < 120; frame++)
             {
-                if (UI.VotingUI.instance.Setup())
+                if (VotingView.Setup())
                 {
                     var tableViewController = Resources.FindObjectsOfTypeAll<LevelCollectionTableView>().FirstOrDefault();
                     if (tableViewController != null)
