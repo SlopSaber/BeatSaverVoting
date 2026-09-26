@@ -177,6 +177,9 @@ namespace BeatSaverVoting.UI
         private void GetVotesForMap()
         {
             var isCustomLevel = lastSong.levelID.StartsWith("custom_level_");
+            _lastBeatSaverSong = null;
+            UpInteractable = false;
+            DownInteractable = false;
             downButton.gameObject.SetActive(isCustomLevel);
             upButton.gameObject.SetActive(isCustomLevel);
             voteTitle.gameObject.SetActive(isCustomLevel);
@@ -190,7 +193,7 @@ namespace BeatSaverVoting.UI
 
         private IEnumerator GetSongInfo(string hash)
         {
-            var www = UnityWebRequest.Get($"{Plugin.BeatsaverURL}/maps/hash/{hash.ToLower()}");
+            using var www = UnityWebRequest.Get($"{Plugin.BeatsaverURL}/maps/hash/{hash.ToLowerInvariant()}");
             www.SetRequestHeader("user-agent", _userAgent);
 
             yield return www.SendWebRequest();
@@ -234,9 +237,7 @@ namespace BeatSaverVoting.UI
 
             try
             {
-                _lastBeatSaverSong = null;
-
-                if (!(cd.result is Song song)) yield break;
+                if (!(cd.result is Song song) || lastSong != level) yield break;
 
                 _lastBeatSaverSong = song;
 
@@ -313,9 +314,15 @@ namespace BeatSaverVoting.UI
         {
             UpdateView("Voting...");
 
-            var task = Task.Run(async () => await _userModel.user.GetAccessTokenAsync());
-
-            yield return new WaitUntil(() => task.IsCompleted);
+            var task = _userModel.user.GetAccessTokenAsync();
+            while (!task.IsCompleted)
+                yield return null;
+            if (task.IsFaulted || task.IsCanceled)
+            {
+                UpdateView("Authentication failed");
+                callback?.Invoke(hash, false, false, currentVoteCount);
+                yield break;
+            }
             var authToken = task.Result;
             var userId = _userModel.user.userId.ToString();
 

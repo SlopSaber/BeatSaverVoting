@@ -9,7 +9,8 @@ namespace BeatSaverVoting.HarmonyPatches
     {
         private static void Postfix(BeatmapLevel beatmapLevel, bool isFavorite, ref UnityEngine.UI.Image ____favoritesBadgeImage)
         {
-            var hash = SongCore.Collections.GetCustomLevelHash(beatmapLevel.levelID).ToLower();
+            var hash = SongCore.Collections.GetCustomLevelHash(beatmapLevel.levelID);
+            if (string.IsNullOrEmpty(hash)) return;
             var voteStatus = Plugin.CurrentVoteStatus(hash);
 
             if (voteStatus == null && !isFavorite)

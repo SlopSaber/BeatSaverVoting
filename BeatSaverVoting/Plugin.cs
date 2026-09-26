@@ -52,12 +52,12 @@ namespace BeatSaverVoting
 
         public static VoteType? CurrentVoteStatus(string hash)
         {
-            return votedSongs.ContainsKey(hash) ? votedSongs[hash].voteType : (VoteType?) null;
+            return votedSongs.TryGetValue(hash, out var vote) ? vote.voteType : (VoteType?) null;
         }
 
         internal const string BeatsaverURL = "https://api.beatsaver.com";
         private static readonly string VotedSongsPath = $"{Environment.CurrentDirectory}/UserData/votedSongs.json";
-        internal static Dictionary<string, SongVote> votedSongs = new Dictionary<string, SongVote>();
+        internal static Dictionary<string, SongVote> votedSongs = new Dictionary<string, SongVote>(StringComparer.OrdinalIgnoreCase);
 
         internal static HMUI.TableView tableView;
         internal static Sprite favoriteIcon;
@@ -87,7 +87,10 @@ namespace BeatSaverVoting
             }
             else
             {
-                votedSongs = JsonConvert.DeserializeObject<Dictionary<string, SongVote>>(File.ReadAllText(VotedSongsPath, Encoding.UTF8)) ?? votedSongs;
+                var loaded = JsonConvert.DeserializeObject<Dictionary<string, SongVote>>(File.ReadAllText(VotedSongsPath, Encoding.UTF8));
+                if (loaded != null)
+                    foreach (var entry in loaded)
+                        votedSongs[entry.Key] = entry.Value;
             }
         }
 
@@ -123,7 +126,7 @@ namespace BeatSaverVoting
         {
             for (var frame = 0; frame < 120; frame++)
             {
-                if (VotingView.Setup())
+                if (frame % 5 == 0 && VotingView.Setup())
                 {
                     var tableViewController = Resources.FindObjectsOfTypeAll<LevelCollectionTableView>().FirstOrDefault();
                     if (tableViewController != null)
