@@ -384,20 +384,11 @@ namespace BeatSaverVoting.UI
             }
             else
             {
-                try
-                {
-                    prepared = new PreparationResult<string> { Value = JsonConvert.SerializeObject(payload) };
-                }
-                catch (Exception exception)
-                {
-                    prepared = new PreparationResult<string> { Error = exception };
-                }
+                prepared = new PreparationResult<string> { Value = JsonConvert.SerializeObject(payload) };
             }
             if (prepared.Error != null)
             {
-                Logging.log.Error("Unable to prepare vote! Exception: " + prepared.Error);
-                callback?.Invoke(hash, false, false, currentVoteCount);
-                yield break;
+                System.Runtime.ExceptionServices.ExceptionDispatchInfo.Capture(prepared.Error).Throw();
             }
 
             using var voteWWW = UnityWebRequest.Post($"{Plugin.BeatsaverURL}/vote", prepared.Value, "application/json");
