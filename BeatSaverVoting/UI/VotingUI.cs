@@ -9,6 +9,7 @@ using TMPro;
 using System;
 using System.Collections.Generic;
 using System.Threading.Tasks;
+using System.Threading;
 using System.ComponentModel;
 using Component = UnityEngine.Component;
 using System.Runtime.CompilerServices;
@@ -49,6 +50,37 @@ namespace BeatSaverVoting.UI
             public string hash;
         }
 
+        private sealed class PreparationResult<T>
+        {
+            internal T Value;
+            internal Exception Error;
+        }
+
+        private static PreparationResult<Song> ParseSong(object response)
+        {
+            try
+            {
+                var json = JObject.Parse((string)response);
+                return new PreparationResult<Song> { Value = json.Children().Any() ? new Song(json) : null };
+            }
+            catch (Exception exception)
+            {
+                return new PreparationResult<Song> { Error = exception };
+            }
+        }
+
+        private static PreparationResult<string> SerializePayload(object payload)
+        {
+            try
+            {
+                return new PreparationResult<string> { Value = JsonConvert.SerializeObject((Payload)payload) };
+            }
+            catch (Exception exception)
+            {
+                return new PreparationResult<string> { Error = exception };
+            }
+        }
+
         internal BeatmapLevel lastSong;
         private Song _lastBeatSaverSong;
         private IPlatform _userModel;
@@ -75,6 +107,7 @@ namespace BeatSaverVoting.UI
         }
         private bool _downInteractable = true;
         private bool _isSetup;
+        private int _ratingRevision;
         [UIValue("DownInteractable")]
         public bool DownInteractable
         {
@@ -176,6 +209,7 @@ namespace BeatSaverVoting.UI
 
         private void GetVotesForMap()
         {
+            var revision = ++_ratingRevision;
             var isCustomLevel = lastSong.levelID.StartsWith("custom_level_");
             _lastBeatSaverSong = null;
             UpInteractable = false;
@@ -187,7 +221,7 @@ namespace BeatSaverVoting.UI
 
             if (isCustomLevel)
             {
-                voteTitle.StartCoroutine(GetRatingForSong(lastSong));
+                voteTitle.StartCoroutine(GetRatingForSong(lastSong, revision));
             }
         }
 
@@ -206,29 +240,22 @@ namespace BeatSaverVoting.UI
             }
             else
             {
-                Song result = null;
-                try
-                {
-                    var jNode = JObject.Parse(www.downloadHandler.text);
-                    if (jNode.Children().Any())
-                    {
-                        result = new Song(jNode);
-                    }
-                    else
-                    {
-                        Logging.log.Error("Song doesn't exist on BeatSaver!");
-                    }
-                }
-                catch (Exception e)
-                {
-                    Logging.log.Critical("Unable to get song rating! Excpetion: " + e);
-                }
+                var parse = Task.Factory.StartNew(ParseSong, www.downloadHandler.text, CancellationToken.None,
+                    TaskCreationOptions.DenyChildAttach, TaskScheduler.Default);
+                while (!parse.IsCompleted)
+                    yield return null;
 
-                yield return result;
+                var result = parse.Result;
+                if (result.Error != null)
+                    Logging.log.Critical("Unable to get song rating! Excpetion: " + result.Error);
+                else if (result.Value == null)
+                    Logging.log.Error("Song doesn't exist on BeatSaver!");
+
+                yield return result.Value;
             }
         }
 
-        private IEnumerator GetRatingForSong(BeatmapLevel level)
+        private IEnumerator GetRatingForSong(BeatmapLevel level, int revision)
         {
             if (!level.levelID.StartsWith("custom_level_")) yield break;
 
@@ -237,7 +264,7 @@ namespace BeatSaverVoting.UI
 
             try
             {
-                if (!(cd.result is Song song) || lastSong != level) yield break;
+                if (!(cd.result is Song song) || lastSong != level || revision != _ratingRevision) yield break;
 
                 _lastBeatSaverSong = song;
 
@@ -346,8 +373,19 @@ namespace BeatSaverVoting.UI
 
         private IEnumerator PerformVote(string hash, Payload payload, int currentVoteCount, VoteCallback callback)
         {
-            var json = JsonConvert.SerializeObject(payload);
-            using var voteWWW = UnityWebRequest.Post($"{Plugin.BeatsaverURL}/vote", json, "application/json");
+            var serialize = Task.Factory.StartNew(SerializePayload, payload, CancellationToken.None,
+                TaskCreationOptions.DenyChildAttach, TaskScheduler.Default);
+            while (!serialize.IsCompleted)
+                yield return null;
+            var prepared = serialize.Result;
+            if (prepared.Error != null)
+            {
+                Logging.log.Error("Unable to prepare vote! Exception: " + prepared.Error);
+                callback?.Invoke(hash, false, false, currentVoteCount);
+                yield break;
+            }
+
+            using var voteWWW = UnityWebRequest.Post($"{Plugin.BeatsaverURL}/vote", prepared.Value, "application/json");
             voteWWW.SetRequestHeader("user-agent", _userAgent);
             voteWWW.timeout = 30;
             yield return voteWWW.SendWebRequest();
@@ -391,11 +429,12 @@ namespace BeatSaverVoting.UI
 
             var hasPreviousVote = Plugin.votedSongs.ContainsKey(hash);
 
-            UpInteractable = !upvote;
-            DownInteractable = upvote;
-
-            if (hash == _lastBeatSaverSong.hash)
+            if (_lastBeatSaverSong != null && hash == _lastBeatSaverSong.hash)
             {
+                ++_ratingRevision;
+                UpInteractable = !upvote;
+                DownInteractable = upvote;
+
                 if (hasPreviousVote)
                 {
                     var diff = upvote ? 1 : -1;
@@ -413,18 +452,20 @@ namespace BeatSaverVoting.UI
 
                 voteText.text = GetScoreFromVotes(_lastBeatSaverSong.upVotes, _lastBeatSaverSong.downVotes);
             }
-            else
-            {
-                // Fallback to total
-                voteText.text = newTotal.ToString();
-            }
-
             if (!Plugin.votedSongs.ContainsKey(hash) || Plugin.votedSongs[hash].voteType != (upvote ? Plugin.VoteType.Upvote : Plugin.VoteType.Downvote))
             {
                 Plugin.votedSongs[hash] = new Plugin.SongVote(hash, upvote ? Plugin.VoteType.Upvote : Plugin.VoteType.Downvote);
-                Plugin.WriteVotes();
-                Plugin.tableView.RefreshCellsContent();
+                var write = Plugin.WriteVotesAsync();
+                voteTitle.StartCoroutine(WriteVotesAndRefresh(write));
             }
+        }
+
+        private static IEnumerator WriteVotesAndRefresh(Task<Exception> write)
+        {
+            while (!write.IsCompleted)
+                yield return null;
+            if (Plugin.FinishVoteWrite(write) && Plugin.tableView != null)
+                Plugin.tableView.RefreshCellsContent();
         }
     }
 }
