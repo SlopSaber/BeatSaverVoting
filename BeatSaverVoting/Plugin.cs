@@ -316,8 +316,12 @@ namespace BeatSaverVoting
 
         private static Task<Exception> QueueVoteWrite()
         {
+            var comparer = votedSongs?.Comparer;
             var useWorkerJson = JsonConvert.DefaultSettings == null && votedSongs != null &&
-                votedSongs.GetType() == typeof(Dictionary<string, SongVote>);
+                votedSongs.GetType() == typeof(Dictionary<string, SongVote>) &&
+                (ReferenceEquals(comparer, EqualityComparer<string>.Default) ||
+                 ReferenceEquals(comparer, StringComparer.Ordinal) ||
+                 ReferenceEquals(comparer, StringComparer.OrdinalIgnoreCase));
             var json = useWorkerJson ? null : JsonConvert.SerializeObject(votedSongs);
             var request = new VoteFileRequest(VotedSongsPath, json == null ? votedSongs.ToArray() : null, json);
             lock (VoteFileGate)
