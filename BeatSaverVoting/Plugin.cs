@@ -1,6 +1,7 @@
 ﻿using System;
 using System.Collections;
 using System.Collections.Generic;
+using System.Globalization;
 using System.IO;
 using System.Linq;
 using System.Reflection;
@@ -34,43 +35,66 @@ namespace BeatSaverVoting
         private static readonly object VoteFileGate = new object();
         private static readonly List<Task<Exception>> PendingVoteWrites = new List<Task<Exception>>();
         private static Task _voteFileTail = Task.CompletedTask;
-        private static Task<Dictionary<string, SongVote>> _voteLoadTask;
+        private static Task<VoteLoadResult> _voteLoadTask;
         private static bool _votesReady;
         private static bool _startupReady;
         private static bool _exiting;
+
+        private sealed class VoteLoadResult
+        {
+            internal Dictionary<string, SongVote> Votes;
+            internal string Json;
+            internal bool Missing;
+        }
 
         private sealed class VoteFileRequest
         {
             private readonly string _path;
             private readonly KeyValuePair<string, SongVote>[] _votes;
+            private readonly string _json;
+            private readonly bool _decodeOnOwner;
 
-            internal VoteFileRequest(string path, KeyValuePair<string, SongVote>[] votes)
+            internal VoteFileRequest(string path, bool decodeOnOwner)
+            {
+                _path = path;
+                _decodeOnOwner = decodeOnOwner;
+            }
+
+            internal VoteFileRequest(string path, KeyValuePair<string, SongVote>[] votes, string json)
             {
                 _path = path;
                 _votes = votes;
+                _json = json;
             }
 
-            internal Dictionary<string, SongVote> Load(Task previous)
+            internal VoteLoadResult Load(Task previous)
             {
                 if (!File.Exists(_path))
-                {
-                    var error = Write(previous);
-                    if (error != null)
-                        System.Runtime.ExceptionServices.ExceptionDispatchInfo.Capture(error).Throw();
-                    return null;
-                }
+                    return new VoteLoadResult { Missing = true };
 
-                return JsonConvert.DeserializeObject<Dictionary<string, SongVote>>(File.ReadAllText(_path, Encoding.UTF8));
+                var json = File.ReadAllText(_path, Encoding.UTF8);
+                if (_decodeOnOwner)
+                    return new VoteLoadResult { Json = json };
+
+                using var reader = new JsonTextReader(new StringReader(json));
+                var serializer = JsonSerializer.Create();
+                serializer.CheckAdditionalContent = true;
+                return new VoteLoadResult { Votes = serializer.Deserialize<Dictionary<string, SongVote>>(reader) };
             }
 
             internal Exception Write(Task previous)
             {
                 try
                 {
-                    var votes = new Dictionary<string, SongVote>(StringComparer.OrdinalIgnoreCase);
-                    foreach (var vote in _votes)
-                        votes.Add(vote.Key, vote.Value);
-                    File.WriteAllText(_path, JsonConvert.SerializeObject(votes), Encoding.UTF8);
+                    var json = _json;
+                    if (json == null)
+                    {
+                        var votes = new Dictionary<string, SongVote>(StringComparer.Ordinal);
+                        foreach (var vote in _votes)
+                            votes.Add(vote.Key, vote.Value);
+                        json = SerializeOwnedJson(votes);
+                    }
+                    File.WriteAllText(_path, json, Encoding.UTF8);
                     return null;
                 }
                 catch (Exception exception)
@@ -119,12 +143,14 @@ namespace BeatSaverVoting
         [OnStart]
         public async Task OnApplicationStart()
         {
-            var request = new VoteFileRequest(VotedSongsPath, votedSongs.ToArray());
+            var request = new VoteFileRequest(VotedSongsPath, JsonConvert.DefaultSettings != null);
+            Task<VoteLoadResult> load;
             lock (VoteFileGate)
             {
-                _voteLoadTask = _voteFileTail.ContinueWith(request.Load, CancellationToken.None,
+                load = _voteFileTail.ContinueWith(request.Load, CancellationToken.None,
                     TaskContinuationOptions.None, TaskScheduler.Default);
-                _voteFileTail = _voteLoadTask;
+                _voteLoadTask = load;
+                _voteFileTail = load;
             }
 
             BSEvents.lateMenuSceneLoadedFresh += BSEvents_menuSceneLoadedFresh;
@@ -136,30 +162,45 @@ namespace BeatSaverVoting
             upvoteIcon = await BeatSaberMarkupLanguage.Utilities.LoadSpriteFromAssemblyAsync("BeatSaverVoting.Icons.Upvote.png");
             downvoteIcon = await BeatSaberMarkupLanguage.Utilities.LoadSpriteFromAssemblyAsync("BeatSaverVoting.Icons.Downvote.png");
 
-            Dictionary<string, SongVote> loaded = null;
+            VoteLoadResult loaded = null;
             Exception loadError = null;
             try
             {
-                loaded = await _voteLoadTask.ConfigureAwait(false);
+                loaded = await load.ConfigureAwait(false);
             }
             catch (Exception exception)
             {
                 loadError = exception;
             }
 
+            var creation = await UnityMainThreadTaskScheduler.Factory.StartNew(() =>
+            {
+                if (_exiting) return null;
+                try
+                {
+                    if (loadError != null)
+                        System.Runtime.ExceptionServices.ExceptionDispatchInfo.Capture(loadError).Throw();
+                    var needsCreation = loaded.Missing && !_votesReady;
+                    CompleteVoteLoading(loaded);
+                    return needsCreation ? QueueVoteWrite() : null;
+                }
+                catch (Exception exception)
+                {
+                    Utilities.Logging.log.Error("Unable to load votes! Exception: " + exception);
+                    _votesReady = true;
+                    _voteLoadTask = null;
+                    ReleaseVoteFileTask(load);
+                    return null;
+                }
+            });
+
+            var creationError = creation != null ? await creation.ConfigureAwait(false) : null;
             await UnityMainThreadTaskScheduler.Factory.StartNew(() =>
             {
                 if (_exiting) return;
-                if (loadError != null)
-                {
-                    Utilities.Logging.log.Error("Unable to load votes! Exception: " + loadError);
-                    _votesReady = true;
-                }
-                else
-                {
-                    CompleteVoteLoading(loaded);
-                }
-
+                if (creation != null) ReleaseVoteFileTask(creation);
+                if (creationError != null)
+                    Utilities.Logging.log.Error("Unable to save votes! Exception: " + creationError);
                 _harmony = new Harmony("com.kyle1413.BeatSaber.BeatSaverVoting");
                 _harmony.PatchAll(Assembly.GetExecutingAssembly());
                 _startupReady = true;
@@ -182,6 +223,8 @@ namespace BeatSaverVoting
             }
             foreach (var write in PendingVoteWrites.ToArray())
                 FinishVoteWrite(write);
+            _voteLoadTask = null;
+            ReleaseVoteFileTask(_voteFileTail);
 
             _harmony?.UnpatchSelf();
             if (_coroutineRunner != null)
@@ -247,7 +290,9 @@ namespace BeatSaverVoting
             if (!_votesReady && _voteLoadTask != null)
                 CompleteVoteLoading(_voteLoadTask.GetAwaiter().GetResult());
 
-            var error = QueueVoteWrite().GetAwaiter().GetResult();
+            var write = QueueVoteWrite();
+            var error = write.GetAwaiter().GetResult();
+            ReleaseVoteFileTask(write);
             if (error != null)
                 System.Runtime.ExceptionServices.ExceptionDispatchInfo.Capture(error).Throw();
         }
@@ -263,6 +308,7 @@ namespace BeatSaverVoting
         {
             PendingVoteWrites.Remove(write);
             var error = write.GetAwaiter().GetResult();
+            ReleaseVoteFileTask(write);
             if (error == null) return true;
             Utilities.Logging.log.Error("Unable to save votes! Exception: " + error);
             return false;
@@ -270,7 +316,10 @@ namespace BeatSaverVoting
 
         private static Task<Exception> QueueVoteWrite()
         {
-            var request = new VoteFileRequest(VotedSongsPath, votedSongs.ToArray());
+            var useWorkerJson = JsonConvert.DefaultSettings == null && votedSongs != null &&
+                votedSongs.GetType() == typeof(Dictionary<string, SongVote>);
+            var json = useWorkerJson ? null : JsonConvert.SerializeObject(votedSongs);
+            var request = new VoteFileRequest(VotedSongsPath, json == null ? votedSongs.ToArray() : null, json);
             lock (VoteFileGate)
             {
                 var write = _voteFileTail.ContinueWith(request.Write, CancellationToken.None,
@@ -280,14 +329,39 @@ namespace BeatSaverVoting
             }
         }
 
-        private static void CompleteVoteLoading(Dictionary<string, SongVote> loaded)
+        private static void CompleteVoteLoading(VoteLoadResult result)
         {
             if (_votesReady) return;
+            var loaded = result.Json != null
+                ? JsonConvert.DeserializeObject<Dictionary<string, SongVote>>(result.Json)
+                : result.Votes;
             if (loaded != null)
                 foreach (var entry in loaded)
                     if (!votedSongs.ContainsKey(entry.Key))
                         votedSongs[entry.Key] = entry.Value;
             _votesReady = true;
+            var load = _voteLoadTask;
+            _voteLoadTask = null;
+            ReleaseVoteFileTask(load);
+        }
+
+        private static void ReleaseVoteFileTask(Task completed)
+        {
+            lock (VoteFileGate)
+                if (ReferenceEquals(_voteFileTail, completed))
+                    _voteFileTail = Task.CompletedTask;
+        }
+
+        internal static string SerializeOwnedJson(object value)
+        {
+            var serializer = JsonSerializer.Create();
+            using var text = new StringWriter(new StringBuilder(256), CultureInfo.InvariantCulture);
+            using (var writer = new JsonTextWriter(text))
+            {
+                writer.Formatting = serializer.Formatting;
+                serializer.Serialize(writer, value, null);
+            }
+            return text.ToString();
         }
 
     }

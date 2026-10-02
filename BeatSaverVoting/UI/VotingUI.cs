@@ -73,7 +73,7 @@ namespace BeatSaverVoting.UI
         {
             try
             {
-                return new PreparationResult<string> { Value = JsonConvert.SerializeObject((Payload)payload) };
+                return new PreparationResult<string> { Value = Plugin.SerializeOwnedJson((Payload)payload) };
             }
             catch (Exception exception)
             {
@@ -373,11 +373,26 @@ namespace BeatSaverVoting.UI
 
         private IEnumerator PerformVote(string hash, Payload payload, int currentVoteCount, VoteCallback callback)
         {
-            var serialize = Task.Factory.StartNew(SerializePayload, payload, CancellationToken.None,
-                TaskCreationOptions.DenyChildAttach, TaskScheduler.Default);
-            while (!serialize.IsCompleted)
-                yield return null;
-            var prepared = serialize.Result;
+            PreparationResult<string> prepared;
+            if (JsonConvert.DefaultSettings == null)
+            {
+                var serialize = Task.Factory.StartNew(SerializePayload, payload, CancellationToken.None,
+                    TaskCreationOptions.DenyChildAttach, TaskScheduler.Default);
+                while (!serialize.IsCompleted)
+                    yield return null;
+                prepared = serialize.Result;
+            }
+            else
+            {
+                try
+                {
+                    prepared = new PreparationResult<string> { Value = JsonConvert.SerializeObject(payload) };
+                }
+                catch (Exception exception)
+                {
+                    prepared = new PreparationResult<string> { Error = exception };
+                }
+            }
             if (prepared.Error != null)
             {
                 Logging.log.Error("Unable to prepare vote! Exception: " + prepared.Error);
